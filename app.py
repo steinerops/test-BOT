@@ -43,7 +43,7 @@ logger = logging.getLogger("pdf_chatbot")
 class VoiceHandler:
     def __init__(self):
         self.api_key = st.secrets.get("ELEVENLABS_API_KEY", "")
-        self.voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default voice
+        self.voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "Sqahs9NqWlhYumWOfZRh")  # Default voice
         self.base_url = "https://api.elevenlabs.io/v1"
         
     def text_to_speech(self, text):
