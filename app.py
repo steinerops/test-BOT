@@ -4,6 +4,7 @@ import tempfile
 import logging
 import requests
 import base64
+import time
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -27,6 +28,13 @@ import pinecone
 from langchain_pinecone import PineconeVectorStore
 import google.generativeai as genai
 
+# Import speech recognition for voice input
+try:
+    import speech_recognition as sr
+    has_speech_recognition = True
+except ImportError:
+    has_speech_recognition = False
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -43,7 +51,7 @@ logger = logging.getLogger("pdf_chatbot")
 class VoiceHandler:
     def __init__(self):
         self.api_key = st.secrets.get("ELEVENLABS_API_KEY", "")
-        self.voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "Sqahs9NqWlhYumWOfZRh")  # Default voice
+        self.voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default voice
         self.base_url = "https://api.elevenlabs.io/v1"
         
     def text_to_speech(self, text):
@@ -360,101 +368,54 @@ def create_audio_player(audio_content):
     """
     return audio_html
 
-def create_voice_input_component():
-    """Create a voice input component using JavaScript"""
-    voice_input_html = """
-    <div id="voiceInputContainer" style="text-align: center; margin: 20px 0;">
-        <button id="voiceButton" onclick="toggleVoiceInput()" 
-                style="background: linear-gradient(45deg, #ff6b6b, #4ecdc4); 
-                       border: none; border-radius: 50px; padding: 15px 30px; 
-                       color: white; font-size: 16px; cursor: pointer; 
-                       transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
-            🎤 Start Voice Input
-        </button>
-        <div id="voiceStatus" style="margin-top: 10px; font-style: italic; color: #666;"></div>
-        <div id="voiceTranscript" style="margin-top: 10px; padding: 10px; 
-             background: #f0f0f0; border-radius: 10px; min-height: 20px; 
-             display: none;"></div>
-    </div>
+def create_voice_input_interface():
+    """Create voice input interface using Streamlit's built-in audio input"""
+    st.markdown("### 🎤 Voice Input")
+    
+    # Use Streamlit's audio input widget
+    audio_bytes = st.audio_input("Record your question")
+    
+    return audio_bytes
 
-    <script>
-    let recognition = null;
-    let isListening = false;
-
-    function initVoiceRecognition() {
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = true;
-            recognition.lang = 'en-US';
-
-            recognition.onstart = function() {
-                document.getElementById('voiceStatus').textContent = 'Listening... Speak now!';
-                document.getElementById('voiceButton').textContent = '🔴 Stop Listening';
-                document.getElementById('voiceButton').style.background = 'linear-gradient(45deg, #ff4757, #ff3838)';
-                document.getElementById('voiceTranscript').style.display = 'block';
-            };
-
-            recognition.onresult = function(event) {
-                let transcript = '';
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    transcript += event.results[i][0].transcript;
-                }
-                document.getElementById('voiceTranscript').textContent = transcript;
-                
-                if (event.results[event.resultIndex].isFinal) {
-                    // Send the transcript back to Streamlit
-                    window.parent.postMessage({
-                        type: 'voice_input',
-                        transcript: transcript
-                    }, '*');
-                }
-            };
-
-            recognition.onerror = function(event) {
-                document.getElementById('voiceStatus').textContent = 'Error: ' + event.error;
-                resetVoiceButton();
-            };
-
-            recognition.onend = function() {
-                resetVoiceButton();
-            };
-        } else {
-            document.getElementById('voiceStatus').textContent = 'Voice recognition not supported in this browser';
-            document.getElementById('voiceButton').disabled = true;
-        }
-    }
-
-    function toggleVoiceInput() {
-        if (!recognition) {
-            initVoiceRecognition();
-        }
-
-        if (!isListening) {
-            recognition.start();
-            isListening = true;
-        } else {
-            recognition.stop();
-            isListening = false;
-        }
-    }
-
-    function resetVoiceButton() {
-        isListening = false;
-        document.getElementById('voiceButton').textContent = '🎤 Start Voice Input';
-        document.getElementById('voiceButton').style.background = 'linear-gradient(45deg, #ff6b6b, #4ecdc4)';
-        document.getElementById('voiceStatus').textContent = '';
-        document.getElementById('voiceTranscript').style.display = 'none';
-    }
-
-    // Initialize when the page loads
-    window.onload = function() {
-        initVoiceRecognition();
-    };
-    </script>
-    """
-    return voice_input_html
+def process_audio_to_text(audio_bytes):
+    """Convert audio to text using speech recognition"""
+    if not has_speech_recognition:
+        st.error("Speech recognition library not available. Please install speech_recognition.")
+        return None
+    
+    if audio_bytes is None:
+        return None
+    
+    try:
+        # Initialize speech recognizer
+        r = sr.Recognizer()
+        
+        # Convert audio bytes to audio file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_audio:
+            tmp_audio.write(audio_bytes)
+            audio_file_path = tmp_audio.name
+        
+        # Load audio file and convert to text
+        with sr.AudioFile(audio_file_path) as source:
+            audio = r.record(source)
+            
+        # Use Google's speech recognition
+        text = r.recognize_google(audio)
+        
+        # Clean up temporary file
+        os.unlink(audio_file_path)
+        
+        return text
+        
+    except sr.UnknownValueError:
+        st.error("Could not understand the audio. Please try again.")
+        return None
+    except sr.RequestError as e:
+        st.error(f"Could not request results from speech recognition service: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Error processing audio: {str(e)}")
+        return None
 
 # Streamlit UI
 st.set_page_config(page_title="AI PDF Chatbot with Voice", layout="wide")
@@ -481,8 +442,6 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "voice_enabled" not in st.session_state:
     st.session_state.voice_enabled = False
-if "voice_transcript" not in st.session_state:
-    st.session_state.voice_transcript = ""
 
 # Define the layout
 left_col, right_col = st.columns([1, 2])
@@ -512,6 +471,12 @@ with left_col:
         # Voice settings
         st.subheader("🔊 Voice Controls")
         auto_play = st.checkbox("Auto-play responses", value=True)
+        
+        # Speech recognition info
+        if has_speech_recognition:
+            st.success("✅ Speech recognition available")
+        else:
+            st.warning("⚠️ Speech recognition not available. Install speech_recognition library.")
         
     elif voice_enabled and not st.session_state.voice_handler.api_key:
         st.warning("⚠️ ElevenLabs API key not found. Voice features disabled.")
@@ -582,33 +547,26 @@ with right_col:
                 if voice_enabled and "audio" in message:
                     st.markdown(create_audio_player(message["audio"]), unsafe_allow_html=True)
 
-        # Voice input component
-        if voice_enabled:
-            st.markdown("### 🎤 Voice Input")
-            voice_input_component = create_voice_input_component()
-            st.components.v1.html(voice_input_component, height=200)
+        # Voice input section
+        user_query = None
+        
+        if voice_enabled and has_speech_recognition:
+            # Voice input using Streamlit's audio input
+            audio_bytes = create_voice_input_interface()
             
-            # Check for voice input (this would need to be handled differently in a real app)
-            # For demonstration, we'll use a text input to simulate voice transcript
-            voice_transcript = st.text_input("Voice Transcript (simulated)", 
-                                           placeholder="Voice input will appear here...",
-                                           key="voice_input_field")
-            
-            if voice_transcript and voice_transcript != st.session_state.get("last_voice_transcript", ""):
-                st.session_state.last_voice_transcript = voice_transcript
-                user_query = voice_transcript
-                process_query = True
-            else:
-                process_query = False
-        else:
-            process_query = False
+            if audio_bytes is not None:
+                with st.spinner("🎤 Converting speech to text..."):
+                    voice_text = process_audio_to_text(audio_bytes)
+                    if voice_text:
+                        st.success(f"🎤 Voice input: {voice_text}")
+                        user_query = voice_text
 
-        # Text input
-        if not process_query:
+        # Text input (always available)
+        if not user_query:
             user_query = st.chat_input("Ask a question about your document")
-            process_query = bool(user_query)
 
-        if process_query and user_query:
+        # Process the query
+        if user_query:
             st.chat_message("user").write(user_query)
             st.session_state.chat_history.append({"role": "user", "content": user_query})
 
@@ -653,108 +611,9 @@ with right_col:
                         st.write(f"📄 Page: {source.metadata.get('page', 'N/A')}")
                         st.divider()
 
-# Debug panel (same as before, but with voice debug info)
-if debug_mode:
-    st.header("🔧 Debug Information")
-
-    debug_tabs = st.tabs(["LangChain Components", "Voice Settings", "Process Flow", "Logs", "Pinecone Info"])
-
-    with debug_tabs[0]:
-        st.subheader("Document Loader")
-        st.code("PyMuPDFLoader - Extracts text and metadata from PDF documents")
-
-        st.subheader("Text Splitter")
-        st.code("""
-RecursiveCharacterTextSplitter(
-    chunk_size=1000,
-    chunk_overlap=100
-)
-        """)
-
-        st.subheader("Embedding Model")
-        st.code("HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')")
-
-        st.subheader("Vector Store")
-        st.code(f"PineconeVectorStore(index_name='{st.session_state.chatbot.index_name if st.session_state.chatbot else 'pdf-chatbot'}')")
-
-        st.subheader("Language Model")
-        model_name = "gemini-1.5-flash (with fallbacks to gemini-1.0-pro or models/gemini-pro)"
-        st.code(f"ChatGoogleGenerativeAI(model='{model_name}')")
-
-        st.subheader("Chain Type")
-        st.code("ConversationalRetrievalChain")
-
-    with debug_tabs[1]:
-        st.subheader("🎤 Voice Configuration")
-        st.write(f"Voice Enabled: {voice_enabled}")
-        st.write(f"ElevenLabs API Key: {'✅ Configured' if st.session_state.voice_handler.api_key else '❌ Missing'}")
-        st.write(f"Current Voice ID: {st.session_state.voice_handler.voice_id}")
-        
-        if st.session_state.voice_handler.api_key:
-            voices = st.session_state.voice_handler.get_available_voices()
-            st.write(f"Available Voices: {len(voices)}")
-            for voice_id, voice_name in voices[:5]:  # Show first 5 voices
-                st.write(f"  - {voice_name} ({voice_id})")
-
-    with debug_tabs[2]:
-        st.subheader("PDF Upload Process")
-        st.markdown("""
-        1. **PDF Upload** → User uploads PDF file
-        2. **Text Extraction** → PyMuPDFLoader extracts text and metadata
-        3. **Text Chunking** → RecursiveCharacterTextSplitter creates manageable chunks
-        4. **Embedding Creation** → Each chunk converted to vector representation
-        5. **Vector Storage** → Embeddings stored in Pinecone with namespace
-        """)
-
-        st.subheader("Voice Query Process")
-        st.markdown("""
-        1. **Voice Input** → Browser Speech Recognition captures audio
-        2. **Speech-to-Text** → Browser converts speech to text
-        3. **Query Processing** → Same as text processing (embedding → search → LLM)
-        4. **Text-to-Speech** → ElevenLabs converts response to audio
-        5. **Audio Playback** → Browser plays generated audio
-        """)
-
-    with debug_tabs[3]:
-        try:
-            with open("langchain_processes.log", "r") as log_file:
-                logs = log_file.read()
-            st.code(logs)
-        except:
-            st.info("No logs available yet")
-
-    with debug_tabs[4]:
-        st.subheader("Pinecone Configuration")
-        try:
-            if st.session_state.chatbot:
-                pinecone_version = pinecone.__version__.split('.')[0]
-                
-                if int(pinecone_version) >= 4:
-                    indexes = [idx["name"] for idx in pc.list_indexes()]
-                else:
-                    indexes = pinecone.list_indexes()
-                
-                st.write("Available Indexes:", indexes)
-                st.write("Current Index:", st.session_state.chatbot.index_name)
-                st.write("Environment:", os.environ.get("PINECONE_ENVIRONMENT", "gcp-starter"))
-                st.write("Pinecone Client Version:", pinecone.__version__)
-        except Exception as e:
-            st.error(f"Error fetching Pinecone indexes: {str(e)}")
-
-        st.subheader("Pinecone Information")
-        st.info("""
-        Pinecone Configuration:
-        - Index dimensions: 384
-        - Vector type: Dense
-        - Metric: Cosine
-        - Cloud Provider: AWS
-        - Region: us-east-1
-        - Environment: gcp-starter (default)
-        """)
-
 # Setup instructions
 if not st.session_state.document_processed:
-    with st.expander("🔧 How to set up API keys"):
+    with st.expander("🔧 How to set up API keys and dependencies"):
         st.markdown("""
         ### Setting up your Streamlit Cloud secrets
 
@@ -781,24 +640,37 @@ if not st.session_state.document_processed:
         LANGCHAIN_TRACING_V2 = "true"
         ```
 
-        You can get your API keys from:
-        - [Pinecone Console](https://app.pinecone.io) (both API key and environment)
-        - [Google AI Studio](https://makersuite.google.com/app/apikey)
-        - [ElevenLabs](https://elevenlabs.io) (for voice features)
-        - [LangSmith](https://smith.langchain.com) (optional)
+        ### Requirements.txt for Streamlit Cloud
         
+        Add this to your requirements.txt file:
+        ```
+        streamlit
+        langchain
+        langchain-community
+        langchain-huggingface
+        langchain-google-genai
+        langchain-pinecone
+        pinecone-client
+        google-generativeai
+        PyMuPDF
+        sentence-transformers
+        requests
+        SpeechRecognition
+        ```
+
         ### 🎤 Voice Features Setup
         
         1. **ElevenLabs Account**: Sign up at [ElevenLabs.io](https://elevenlabs.io)
         2. **Get API Key**: Go to your profile settings and copy your API key
         3. **Choose Voice**: Browse available voices and copy the voice ID (optional)
-        4. **Browser Compatibility**: Voice input requires a modern browser with Speech Recognition support (Chrome, Edge, Safari)
+        4. **Browser Support**: Voice input uses Streamlit's built-in audio recording
         
         ### 🔊 Voice Features Include:
-        - **Voice Input**: Speak your questions instead of typing
-        - **Natural Responses**: AI-generated speech responses using ElevenLabs
-        - **Multiple Voices**: Choose from various voice options
-        - **Real-time Processing**: Seamless voice-to-text-to-voice workflow
+        - **Voice Input**: Record your questions using Streamlit's audio input
+        - **Speech-to-Text**: Automatic transcription using Google Speech Recognition
+        - **AI Processing**: Questions sent to Google Gemini for processing
+        - **Text-to-Speech**: Responses converted to speech using ElevenLabs
+        - **Audio Playback**: Seamless audio responses in the chat interface
         """)
 
 # Footer
