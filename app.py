@@ -357,14 +357,29 @@ class PDFChatbot:
         return result["answer"], result["source_documents"]
 
 
-def create_audio_player(audio_content):
+def create_audio_player(audio_content, message_id, should_autoplay=False):
     """Create an HTML audio player for the generated audio"""
     audio_base64 = base64.b64encode(audio_content).decode()
+    autoplay_attr = "autoplay" if should_autoplay else ""
+    
+    # Use a unique ID for each audio player to manage them individually
     audio_html = f"""
-    <audio controls autoplay style="width: 100%;">
+    <audio id="audio_{message_id}" controls {autoplay_attr} style="width: 100%;">
         <source src="data:audio/mpeg;base64,{audio_base64}" type="audio/mpeg">
         Your browser does not support the audio element.
     </audio>
+    <script>
+        // Stop all other audio players when this one starts
+        document.getElementById('audio_{message_id}').addEventListener('play', function() {{
+            var audios = document.querySelectorAll('audio');
+            audios.forEach(function(audio) {{
+                if (audio.id !== 'audio_{message_id}') {{
+                    audio.pause();
+                    audio.currentTime = 0;
+                }}
+            }});
+        }});
+    </script>
     """
     return audio_html
 
@@ -461,6 +476,10 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "voice_enabled" not in st.session_state:
     st.session_state.voice_enabled = False
+if "last_played_audio" not in st.session_state:
+    st.session_state.last_played_audio = None
+if "message_counter" not in st.session_state:
+    st.session_state.message_counter = 0
 
 # Define the layout
 left_col, right_col = st.columns([1, 2])
@@ -547,6 +566,8 @@ with left_col:
             st.session_state.document_processed = False
             st.session_state.conversation = None
             st.session_state.chat_history = []
+            st.session_state.message_counter = 0
+            st.session_state.last_played_audio = None
             st.rerun()
 
 # Chat interface
@@ -557,14 +578,17 @@ with right_col:
         st.info("Please upload a PDF document to start chatting.")
     else:
         # Display chat history
-        for message in st.session_state.chat_history:
+        for i, message in enumerate(st.session_state.chat_history):
             if message["role"] == "user":
                 st.chat_message("user").write(message["content"])
             else:
                 st.chat_message("assistant").write(message["content"])
                 # Add audio player if voice is enabled and audio exists
                 if voice_enabled and "audio" in message:
-                    st.markdown(create_audio_player(message["audio"]), unsafe_allow_html=True)
+                    # Only autoplay the most recent message
+                    should_autoplay = (i == len(st.session_state.chat_history) - 1) and auto_play
+                    message_id = message.get("message_id", i)
+                    st.markdown(create_audio_player(message["audio"], message_id, should_autoplay), unsafe_allow_html=True)
 
         # Voice input section
         user_query = None
@@ -586,6 +610,18 @@ with right_col:
 
         # Process the query
         if user_query:
+            # Stop any currently playing audio before processing new query
+            if voice_enabled:
+                st.markdown("""
+                <script>
+                    var audios = document.querySelectorAll('audio');
+                    audios.forEach(function(audio) {
+                        audio.pause();
+                        audio.currentTime = 0;
+                    });
+                </script>
+                """, unsafe_allow_html=True)
+            
             st.chat_message("user").write(user_query)
             st.session_state.chat_history.append({"role": "user", "content": user_query})
 
@@ -610,16 +646,28 @@ with right_col:
             # Display response
             st.chat_message("assistant").write(response)
             
-            # Store response in chat history
-            message_data = {"role": "assistant", "content": response}
+            # Store response in chat history with unique message ID
+            st.session_state.message_counter += 1
+            message_data = {
+                "role": "assistant", 
+                "content": response,
+                "message_id": st.session_state.message_counter
+            }
             if audio_content:
                 message_data["audio"] = audio_content
             st.session_state.chat_history.append(message_data)
 
-            # Play audio if available
+            # Play audio if available (only the new response)
             if audio_content:
                 st.markdown("🔊 **Audio Response:**")
-                st.markdown(create_audio_player(audio_content), unsafe_allow_html=True)
+                st.markdown(
+                    create_audio_player(
+                        audio_content, 
+                        st.session_state.message_counter, 
+                        auto_play
+                    ), 
+                    unsafe_allow_html=True
+                )
 
             # Show sources
             if sources:
