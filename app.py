@@ -377,44 +377,63 @@ def create_voice_input_interface():
     
     return audio_bytes
 
-def process_audio_to_text(audio_bytes):
+def process_audio_to_text(audio_input):
     """Convert audio to text using speech recognition"""
     if not has_speech_recognition:
         st.error("Speech recognition library not available. Please install speech_recognition.")
         return None
     
-    if audio_bytes is None:
+    if audio_input is None:
         return None
     
     try:
         # Initialize speech recognizer
         r = sr.Recognizer()
         
-        # Convert audio bytes to audio file
+        # Handle both UploadedFile and bytes objects
+        if hasattr(audio_input, 'getvalue'):
+            # It's an UploadedFile object from Streamlit
+            audio_bytes = audio_input.getvalue()
+        else:
+            # It's already bytes
+            audio_bytes = audio_input
+        
+        # Create temporary audio file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as tmp_audio:
             tmp_audio.write(audio_bytes)
             audio_file_path = tmp_audio.name
         
-        # Load audio file and convert to text
-        with sr.AudioFile(audio_file_path) as source:
-            audio = r.record(source)
+        try:
+            # Load audio file and convert to text
+            with sr.AudioFile(audio_file_path) as source:
+                # Adjust for ambient noise and record audio
+                r.adjust_for_ambient_noise(source, duration=0.5)
+                audio = r.record(source)
+                
+            # Use Google's speech recognition
+            text = r.recognize_google(audio)
+            logger.info(f"Successfully converted audio to text: {text}")
+            return text
             
-        # Use Google's speech recognition
-        text = r.recognize_google(audio)
-        
-        # Clean up temporary file
-        os.unlink(audio_file_path)
-        
-        return text
-        
-    except sr.UnknownValueError:
-        st.error("Could not understand the audio. Please try again.")
-        return None
-    except sr.RequestError as e:
-        st.error(f"Could not request results from speech recognition service: {e}")
-        return None
+        except sr.UnknownValueError:
+            st.error("Could not understand the audio. Please try speaking more clearly.")
+            logger.warning("Speech recognition could not understand audio")
+            return None
+        except sr.RequestError as e:
+            st.error(f"Could not request results from speech recognition service: {e}")
+            logger.error(f"Speech recognition service error: {e}")
+            return None
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(audio_file_path)
+                logger.info("Temporary audio file deleted")
+            except Exception as cleanup_error:
+                logger.warning(f"Could not delete temporary audio file: {cleanup_error}")
+                
     except Exception as e:
         st.error(f"Error processing audio: {str(e)}")
+        logger.error(f"Error in process_audio_to_text: {str(e)}")
         return None
 
 # Streamlit UI
@@ -552,11 +571,11 @@ with right_col:
         
         if voice_enabled and has_speech_recognition:
             # Voice input using Streamlit's audio input
-            audio_bytes = create_voice_input_interface()
+            audio_input = create_voice_input_interface()
             
-            if audio_bytes is not None:
+            if audio_input is not None:
                 with st.spinner("🎤 Converting speech to text..."):
-                    voice_text = process_audio_to_text(audio_bytes)
+                    voice_text = process_audio_to_text(audio_input)
                     if voice_text:
                         st.success(f"🎤 Voice input: {voice_text}")
                         user_query = voice_text
