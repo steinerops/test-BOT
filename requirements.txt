@@ -1,0 +1,17 @@
+streamlit
+langchain
+langchain-community
+langchain-core
+langchain-text-splitters
+langchain-huggingface
+langchain-pinecone
+langchain-google-genai
+pinecone-client==2.2.4
+google-generativeai
+PyMuPDF
+sentence-transformers
+transformers
+torch
+numpy
+pandas
+python-dotenv
