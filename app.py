@@ -358,27 +358,60 @@ class PDFChatbot:
 
 
 def create_audio_player(audio_content, message_id, should_autoplay=False):
-    """Create an HTML audio player for the generated audio"""
+    """Create an HTML audio player for the generated audio with proper playback control"""
     audio_base64 = base64.b64encode(audio_content).decode()
-    autoplay_attr = "autoplay" if should_autoplay else ""
     
-    # Use a unique ID for each audio player to manage them individually
+    # Only add autoplay attribute, but control it via JavaScript
     audio_html = f"""
-    <audio id="audio_{message_id}" controls {autoplay_attr} style="width: 100%;">
-        <source src="data:audio/mpeg;base64,{audio_base64}" type="audio/mpeg">
-        Your browser does not support the audio element.
-    </audio>
+    <div id="audio_container_{message_id}">
+        <audio id="audio_{message_id}" controls style="width: 100%;">
+            <source src="data:audio/mpeg;base64,{audio_base64}" type="audio/mpeg">
+            Your browser does not support the audio element.
+        </audio>
+    </div>
     <script>
-        // Stop all other audio players when this one starts
-        document.getElementById('audio_{message_id}').addEventListener('play', function() {{
-            var audios = document.querySelectorAll('audio');
-            audios.forEach(function(audio) {{
-                if (audio.id !== 'audio_{message_id}') {{
-                    audio.pause();
-                    audio.currentTime = 0;
-                }}
+        (function() {{
+            const audioElement = document.getElementById('audio_{message_id}');
+            const containerId = 'audio_container_{message_id}';
+            
+            // Check if this audio has already been processed
+            if (audioElement.hasAttribute('data-processed')) {{
+                return;
+            }}
+            
+            // Mark as processed to avoid duplicate event listeners
+            audioElement.setAttribute('data-processed', 'true');
+            
+            // Stop all other audio players when this one starts
+            audioElement.addEventListener('play', function() {{
+                const allAudios = document.querySelectorAll('audio');
+                allAudios.forEach(function(audio) {{
+                    if (audio.id !== 'audio_{message_id}' && !audio.paused) {{
+                        audio.pause();
+                        audio.currentTime = 0;
+                    }}
+                }});
             }});
-        }});
+            
+            // Handle autoplay for the latest message only
+            if ({str(should_autoplay).lower()}) {{
+                // Stop all currently playing audio first
+                const allAudios = document.querySelectorAll('audio');
+                allAudios.forEach(function(audio) {{
+                    if (!audio.paused) {{
+                        audio.pause();
+                        audio.currentTime = 0;
+                    }}
+                }});
+                
+                // Small delay to ensure other audio is stopped
+                setTimeout(function() {{
+                    audioElement.play().catch(function(error) {{
+                        console.log('Autoplay prevented:', error);
+                    }});
+                }}, 100);
+            }}
+        }})();
     </script>
     """
     return audio_html
@@ -480,6 +513,8 @@ if "last_played_audio" not in st.session_state:
     st.session_state.last_played_audio = None
 if "message_counter" not in st.session_state:
     st.session_state.message_counter = 0
+if "last_autoplay_message_id" not in st.session_state:
+    st.session_state.last_autoplay_message_id = -1
 
 # Define the layout
 left_col, right_col = st.columns([1, 2])
@@ -568,6 +603,7 @@ with left_col:
             st.session_state.chat_history = []
             st.session_state.message_counter = 0
             st.session_state.last_played_audio = None
+            st.session_state.last_autoplay_message_id = -1
             st.rerun()
 
 # Chat interface
@@ -577,23 +613,39 @@ with right_col:
     if not st.session_state.document_processed:
         st.info("Please upload a PDF document to start chatting.")
     else:
-        # Display chat history
+        # Display chat history with proper audio control
         for i, message in enumerate(st.session_state.chat_history):
             if message["role"] == "user":
                 st.chat_message("user").write(message["content"])
             else:
                 st.chat_message("assistant").write(message["content"])
+                
                 # Add audio player if voice is enabled and audio exists
-                if voice_enabled and "audio" in message:
-                    # Only autoplay the most recent message
-                    should_autoplay = (i == len(st.session_state.chat_history) - 1) and auto_play
+                if st.session_state.voice_enabled and "audio" in message:
                     message_id = message.get("message_id", i)
-                    st.markdown(create_audio_player(message["audio"], message_id, should_autoplay), unsafe_allow_html=True)
+                    
+                    # Only autoplay if this is the most recent message AND 
+                    # it hasn't been played yet
+                    is_latest = (i == len(st.session_state.chat_history) - 1)
+                    should_autoplay = (
+                        is_latest and 
+                        auto_play and 
+                        st.session_state.get("last_autoplay_message_id", -1) != message_id
+                    )
+                    
+                    # Update the last autoplay message ID
+                    if should_autoplay:
+                        st.session_state.last_autoplay_message_id = message_id
+                    
+                    st.markdown(
+                        create_audio_player(message["audio"], message_id, should_autoplay), 
+                        unsafe_allow_html=True
+                    )
 
         # Voice input section
         user_query = None
         
-        if voice_enabled and has_speech_recognition:
+        if st.session_state.voice_enabled and has_speech_recognition:
             # Voice input using Streamlit's audio input
             audio_input = create_voice_input_interface()
             
@@ -610,17 +662,18 @@ with right_col:
 
         # Process the query
         if user_query:
-            # Stop any currently playing audio before processing new query
-            if voice_enabled:
-                st.markdown("""
-                <script>
-                    var audios = document.querySelectorAll('audio');
-                    audios.forEach(function(audio) {
+            # Add a global audio stop before processing new query
+            st.markdown("""
+            <script>
+                (function stopAllAudio() {
+                    const allAudios = document.querySelectorAll('audio');
+                    allAudios.forEach(function(audio) {
                         audio.pause();
                         audio.currentTime = 0;
                     });
-                </script>
-                """, unsafe_allow_html=True)
+                })();
+            </script>
+            """, unsafe_allow_html=True)
             
             st.chat_message("user").write(user_query)
             st.session_state.chat_history.append({"role": "user", "content": user_query})
@@ -633,7 +686,7 @@ with right_col:
                     
                     # Generate audio if voice is enabled
                     audio_content = None
-                    if voice_enabled and st.session_state.voice_handler.api_key:
+                    if st.session_state.voice_enabled and st.session_state.voice_handler.api_key:
                         with st.spinner("🔊 Generating audio..."):
                             audio_content = st.session_state.voice_handler.text_to_speech(response)
                     
@@ -660,14 +713,19 @@ with right_col:
             # Play audio if available (only the new response)
             if audio_content:
                 st.markdown("🔊 **Audio Response:**")
+                # This will be the latest message, so it should autoplay
                 st.markdown(
                     create_audio_player(
                         audio_content, 
                         st.session_state.message_counter, 
-                        auto_play
+                        auto_play  # This will be True for the new message
                     ), 
                     unsafe_allow_html=True
                 )
+                
+                # Update the last autoplay message ID
+                if auto_play:
+                    st.session_state.last_autoplay_message_id = st.session_state.message_counter
 
             # Show sources
             if sources:
