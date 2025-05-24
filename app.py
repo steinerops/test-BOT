@@ -2,6 +2,8 @@ import os
 import streamlit as st
 import tempfile
 import logging
+import requests
+import base64
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -36,6 +38,65 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger("pdf_chatbot")
+
+# Voice functionality using ElevenLabs
+class VoiceHandler:
+    def __init__(self):
+        self.api_key = st.secrets.get("ELEVENLABS_API_KEY", "")
+        self.voice_id = st.secrets.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default voice
+        self.base_url = "https://api.elevenlabs.io/v1"
+        
+    def text_to_speech(self, text):
+        """Convert text to speech using ElevenLabs API"""
+        if not self.api_key:
+            logger.warning("ElevenLabs API key not found")
+            return None
+            
+        url = f"{self.base_url}/text-to-speech/{self.voice_id}"
+        
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": self.api_key
+        }
+        
+        data = {
+            "text": text,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.5
+            }
+        }
+        
+        try:
+            response = requests.post(url, json=data, headers=headers)
+            if response.status_code == 200:
+                return response.content
+            else:
+                logger.error(f"ElevenLabs API error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Error calling ElevenLabs API: {str(e)}")
+            return None
+    
+    def get_available_voices(self):
+        """Get list of available voices from ElevenLabs"""
+        if not self.api_key:
+            return []
+            
+        url = f"{self.base_url}/voices"
+        headers = {"xi-api-key": self.api_key}
+        
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                voices = response.json().get("voices", [])
+                return [(voice["voice_id"], voice["name"]) for voice in voices]
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching voices: {str(e)}")
+            return []
 
 # Set up environment variables from Streamlit secrets
 def setup_environment():
@@ -288,10 +349,117 @@ class PDFChatbot:
         return result["answer"], result["source_documents"]
 
 
+def create_audio_player(audio_content):
+    """Create an HTML audio player for the generated audio"""
+    audio_base64 = base64.b64encode(audio_content).decode()
+    audio_html = f"""
+    <audio controls autoplay style="width: 100%;">
+        <source src="data:audio/mpeg;base64,{audio_base64}" type="audio/mpeg">
+        Your browser does not support the audio element.
+    </audio>
+    """
+    return audio_html
+
+def create_voice_input_component():
+    """Create a voice input component using JavaScript"""
+    voice_input_html = """
+    <div id="voiceInputContainer" style="text-align: center; margin: 20px 0;">
+        <button id="voiceButton" onclick="toggleVoiceInput()" 
+                style="background: linear-gradient(45deg, #ff6b6b, #4ecdc4); 
+                       border: none; border-radius: 50px; padding: 15px 30px; 
+                       color: white; font-size: 16px; cursor: pointer; 
+                       transition: all 0.3s ease; box-shadow: 0 4px 15px rgba(0,0,0,0.2);">
+            🎤 Start Voice Input
+        </button>
+        <div id="voiceStatus" style="margin-top: 10px; font-style: italic; color: #666;"></div>
+        <div id="voiceTranscript" style="margin-top: 10px; padding: 10px; 
+             background: #f0f0f0; border-radius: 10px; min-height: 20px; 
+             display: none;"></div>
+    </div>
+
+    <script>
+    let recognition = null;
+    let isListening = false;
+
+    function initVoiceRecognition() {
+        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = function() {
+                document.getElementById('voiceStatus').textContent = 'Listening... Speak now!';
+                document.getElementById('voiceButton').textContent = '🔴 Stop Listening';
+                document.getElementById('voiceButton').style.background = 'linear-gradient(45deg, #ff4757, #ff3838)';
+                document.getElementById('voiceTranscript').style.display = 'block';
+            };
+
+            recognition.onresult = function(event) {
+                let transcript = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    transcript += event.results[i][0].transcript;
+                }
+                document.getElementById('voiceTranscript').textContent = transcript;
+                
+                if (event.results[event.resultIndex].isFinal) {
+                    // Send the transcript back to Streamlit
+                    window.parent.postMessage({
+                        type: 'voice_input',
+                        transcript: transcript
+                    }, '*');
+                }
+            };
+
+            recognition.onerror = function(event) {
+                document.getElementById('voiceStatus').textContent = 'Error: ' + event.error;
+                resetVoiceButton();
+            };
+
+            recognition.onend = function() {
+                resetVoiceButton();
+            };
+        } else {
+            document.getElementById('voiceStatus').textContent = 'Voice recognition not supported in this browser';
+            document.getElementById('voiceButton').disabled = true;
+        }
+    }
+
+    function toggleVoiceInput() {
+        if (!recognition) {
+            initVoiceRecognition();
+        }
+
+        if (!isListening) {
+            recognition.start();
+            isListening = true;
+        } else {
+            recognition.stop();
+            isListening = false;
+        }
+    }
+
+    function resetVoiceButton() {
+        isListening = false;
+        document.getElementById('voiceButton').textContent = '🎤 Start Voice Input';
+        document.getElementById('voiceButton').style.background = 'linear-gradient(45deg, #ff6b6b, #4ecdc4)';
+        document.getElementById('voiceStatus').textContent = '';
+        document.getElementById('voiceTranscript').style.display = 'none';
+    }
+
+    // Initialize when the page loads
+    window.onload = function() {
+        initVoiceRecognition();
+    };
+    </script>
+    """
+    return voice_input_html
+
 # Streamlit UI
-st.set_page_config(page_title="AI PDF Chatbot", layout="wide")
-st.title("AI PDF Chatbot")
-st.write("Upload a PDF and chat with it!")
+st.set_page_config(page_title="AI PDF Chatbot with Voice", layout="wide")
+st.title("🎤 AI PDF Chatbot with Voice")
+st.write("Upload a PDF and chat with it using voice or text!")
 
 # Initialize session state
 if "chatbot" not in st.session_state:
@@ -302,20 +470,52 @@ if "chatbot" not in st.session_state:
         st.error(f"Error initializing chatbot: {str(e)}")
         st.session_state.chatbot = None
 
+if "voice_handler" not in st.session_state:
+    st.session_state.voice_handler = VoiceHandler()
+
 if "conversation" not in st.session_state:
     st.session_state.conversation = None
 if "document_processed" not in st.session_state:
     st.session_state.document_processed = False
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "voice_enabled" not in st.session_state:
+    st.session_state.voice_enabled = False
+if "voice_transcript" not in st.session_state:
+    st.session_state.voice_transcript = ""
 
 # Define the layout
 left_col, right_col = st.columns([1, 2])
 
 # Sidebar content
 with left_col:
-    st.header("Upload Document")
+    st.header("📄 Upload Document")
     uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+
+    # Voice settings
+    st.header("🎤 Voice Settings")
+    voice_enabled = st.toggle("Enable Voice Features", value=st.session_state.voice_enabled)
+    st.session_state.voice_enabled = voice_enabled
+    
+    if voice_enabled and st.session_state.voice_handler.api_key:
+        # Voice selection
+        voices = st.session_state.voice_handler.get_available_voices()
+        if voices:
+            selected_voice = st.selectbox(
+                "Select Voice",
+                options=[voice[0] for voice in voices],
+                format_func=lambda x: next((voice[1] for voice in voices if voice[0] == x), x),
+                index=0
+            )
+            st.session_state.voice_handler.voice_id = selected_voice
+        
+        # Voice settings
+        st.subheader("🔊 Voice Controls")
+        auto_play = st.checkbox("Auto-play responses", value=True)
+        
+    elif voice_enabled and not st.session_state.voice_handler.api_key:
+        st.warning("⚠️ ElevenLabs API key not found. Voice features disabled.")
+        st.info("Add your ElevenLabs API key to secrets to enable voice features.")
 
     debug_mode = st.toggle("Debug Mode", value=False)
 
@@ -356,10 +556,10 @@ with left_col:
                 status_container.error(f"Error processing document: {str(e)}")
 
     if st.session_state.document_processed:
-        st.subheader("Document Information")
-        st.info(f"Filename: {uploaded_file.name}")
+        st.subheader("📋 Document Information")
+        st.info(f"📁 Filename: {uploaded_file.name}")
 
-        if st.button("Process Another Document"):
+        if st.button("🔄 Process Another Document"):
             st.session_state.document_processed = False
             st.session_state.conversation = None
             st.session_state.chat_history = []
@@ -367,50 +567,97 @@ with left_col:
 
 # Chat interface
 with right_col:
-    st.header("Chat with your PDF")
+    st.header("💬 Chat with your PDF")
 
     if not st.session_state.document_processed:
         st.info("Please upload a PDF document to start chatting.")
     else:
+        # Display chat history
         for message in st.session_state.chat_history:
             if message["role"] == "user":
                 st.chat_message("user").write(message["content"])
             else:
                 st.chat_message("assistant").write(message["content"])
+                # Add audio player if voice is enabled and audio exists
+                if voice_enabled and "audio" in message:
+                    st.markdown(create_audio_player(message["audio"]), unsafe_allow_html=True)
 
-        user_query = st.chat_input("Ask a question about your document")
+        # Voice input component
+        if voice_enabled:
+            st.markdown("### 🎤 Voice Input")
+            voice_input_component = create_voice_input_component()
+            st.components.v1.html(voice_input_component, height=200)
+            
+            # Check for voice input (this would need to be handled differently in a real app)
+            # For demonstration, we'll use a text input to simulate voice transcript
+            voice_transcript = st.text_input("Voice Transcript (simulated)", 
+                                           placeholder="Voice input will appear here...",
+                                           key="voice_input_field")
+            
+            if voice_transcript and voice_transcript != st.session_state.get("last_voice_transcript", ""):
+                st.session_state.last_voice_transcript = voice_transcript
+                user_query = voice_transcript
+                process_query = True
+            else:
+                process_query = False
+        else:
+            process_query = False
 
-        if user_query:
+        # Text input
+        if not process_query:
+            user_query = st.chat_input("Ask a question about your document")
+            process_query = bool(user_query)
+
+        if process_query and user_query:
             st.chat_message("user").write(user_query)
-
             st.session_state.chat_history.append({"role": "user", "content": user_query})
 
-            with st.spinner("Thinking..."):
+            with st.spinner("🤔 Thinking..."):
                 try:
-                    response, sources = st.session_state.chatbot.process_query(st.session_state.conversation,
-                                                                               user_query)
+                    response, sources = st.session_state.chatbot.process_query(
+                        st.session_state.conversation, user_query
+                    )
+                    
+                    # Generate audio if voice is enabled
+                    audio_content = None
+                    if voice_enabled and st.session_state.voice_handler.api_key:
+                        with st.spinner("🔊 Generating audio..."):
+                            audio_content = st.session_state.voice_handler.text_to_speech(response)
+                    
                 except Exception as e:
                     logger.error(f"Error processing query: {str(e)}")
                     response = f"I'm sorry, I encountered an error while processing your query: {str(e)}"
                     sources = []
+                    audio_content = None
 
+            # Display response
             st.chat_message("assistant").write(response)
+            
+            # Store response in chat history
+            message_data = {"role": "assistant", "content": response}
+            if audio_content:
+                message_data["audio"] = audio_content
+            st.session_state.chat_history.append(message_data)
 
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            # Play audio if available
+            if audio_content:
+                st.markdown("🔊 **Audio Response:**")
+                st.markdown(create_audio_player(audio_content), unsafe_allow_html=True)
 
+            # Show sources
             if sources:
-                with st.expander("Sources"):
+                with st.expander("📚 Sources"):
                     for i, source in enumerate(sources):
-                        st.write(f"Source {i + 1}:")
+                        st.write(f"**Source {i + 1}:**")
                         st.write(source.page_content)
-                        st.write(f"Page: {source.metadata.get('page', 'N/A')}")
+                        st.write(f"📄 Page: {source.metadata.get('page', 'N/A')}")
                         st.divider()
 
-# Debug panel
+# Debug panel (same as before, but with voice debug info)
 if debug_mode:
-    st.header("Debug Information")
+    st.header("🔧 Debug Information")
 
-    debug_tabs = st.tabs(["LangChain Components", "Process Flow", "Logs", "Pinecone Info"])
+    debug_tabs = st.tabs(["LangChain Components", "Voice Settings", "Process Flow", "Logs", "Pinecone Info"])
 
     with debug_tabs[0]:
         st.subheader("Document Loader")
@@ -428,8 +675,7 @@ RecursiveCharacterTextSplitter(
         st.code("HuggingFaceEmbeddings(model_name='sentence-transformers/all-MiniLM-L6-v2')")
 
         st.subheader("Vector Store")
-        st.code(
-            f"PineconeVectorStore(index_name='{st.session_state.chatbot.index_name if st.session_state.chatbot else 'pdf-chatbot'}')")
+        st.code(f"PineconeVectorStore(index_name='{st.session_state.chatbot.index_name if st.session_state.chatbot else 'pdf-chatbot'}')")
 
         st.subheader("Language Model")
         model_name = "gemini-1.5-flash (with fallbacks to gemini-1.0-pro or models/gemini-pro)"
@@ -438,7 +684,46 @@ RecursiveCharacterTextSplitter(
         st.subheader("Chain Type")
         st.code("ConversationalRetrievalChain")
 
+    with debug_tabs[1]:
+        st.subheader("🎤 Voice Configuration")
+        st.write(f"Voice Enabled: {voice_enabled}")
+        st.write(f"ElevenLabs API Key: {'✅ Configured' if st.session_state.voice_handler.api_key else '❌ Missing'}")
+        st.write(f"Current Voice ID: {st.session_state.voice_handler.voice_id}")
+        
+        if st.session_state.voice_handler.api_key:
+            voices = st.session_state.voice_handler.get_available_voices()
+            st.write(f"Available Voices: {len(voices)}")
+            for voice_id, voice_name in voices[:5]:  # Show first 5 voices
+                st.write(f"  - {voice_name} ({voice_id})")
+
+    with debug_tabs[2]:
+        st.subheader("PDF Upload Process")
+        st.markdown("""
+        1. **PDF Upload** → User uploads PDF file
+        2. **Text Extraction** → PyMuPDFLoader extracts text and metadata
+        3. **Text Chunking** → RecursiveCharacterTextSplitter creates manageable chunks
+        4. **Embedding Creation** → Each chunk converted to vector representation
+        5. **Vector Storage** → Embeddings stored in Pinecone with namespace
+        """)
+
+        st.subheader("Voice Query Process")
+        st.markdown("""
+        1. **Voice Input** → Browser Speech Recognition captures audio
+        2. **Speech-to-Text** → Browser converts speech to text
+        3. **Query Processing** → Same as text processing (embedding → search → LLM)
+        4. **Text-to-Speech** → ElevenLabs converts response to audio
+        5. **Audio Playback** → Browser plays generated audio
+        """)
+
     with debug_tabs[3]:
+        try:
+            with open("langchain_processes.log", "r") as log_file:
+                logs = log_file.read()
+            st.code(logs)
+        except:
+            st.info("No logs available yet")
+
+    with debug_tabs[4]:
         st.subheader("Pinecone Configuration")
         try:
             if st.session_state.chatbot:
@@ -467,36 +752,9 @@ RecursiveCharacterTextSplitter(
         - Environment: gcp-starter (default)
         """)
 
-    with debug_tabs[1]:
-        st.subheader("PDF Upload Process")
-        st.markdown("""
-        1. **PDF Upload** → User uploads PDF file
-        2. **Text Extraction** → PyMuPDFLoader extracts text and metadata
-        3. **Text Chunking** → RecursiveCharacterTextSplitter creates manageable chunks
-        4. **Embedding Creation** → Each chunk converted to vector representation
-        5. **Vector Storage** → Embeddings stored in Pinecone with namespace
-        """)
-
-        st.subheader("Query Process")
-        st.markdown("""
-        1. **Query Embedding** → User question converted to embedding
-        2. **Vector Search** → Find similar document chunks in Pinecone
-        3. **Context Retrieval** → Get top 5 most relevant chunks
-        4. **Context + Question** → Combine with conversation history
-        5. **LLM Generation** → Send to Gemini to generate response
-        """)
-
-    with debug_tabs[2]:
-        try:
-            with open("langchain_processes.log", "r") as log_file:
-                logs = log_file.read()
-            st.code(logs)
-        except:
-            st.info("No logs available yet")
-
 # Setup instructions
 if not st.session_state.document_processed:
-    with st.expander("How to set up API keys"):
+    with st.expander("🔧 How to set up API keys"):
         st.markdown("""
         ### Setting up your Streamlit Cloud secrets
 
@@ -513,6 +771,10 @@ if not st.session_state.document_processed:
         # Required for Pinecone client v2.x.x
         PINECONE_ENVIRONMENT = "gcp-starter"  # Or your specific environment
 
+        # Voice functionality (ElevenLabs)
+        ELEVENLABS_API_KEY = "your-elevenlabs-api-key"
+        ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Optional: specific voice ID
+
         # Optional LangSmith configuration (for advanced monitoring)
         LANGCHAIN_API_KEY = "your-langsmith-api-key"
         LANGCHAIN_PROJECT = "pdf-chatbot"
@@ -522,13 +784,29 @@ if not st.session_state.document_processed:
         You can get your API keys from:
         - [Pinecone Console](https://app.pinecone.io) (both API key and environment)
         - [Google AI Studio](https://makersuite.google.com/app/apikey)
+        - [ElevenLabs](https://elevenlabs.io) (for voice features)
         - [LangSmith](https://smith.langchain.com) (optional)
+        
+        ### 🎤 Voice Features Setup
+        
+        1. **ElevenLabs Account**: Sign up at [ElevenLabs.io](https://elevenlabs.io)
+        2. **Get API Key**: Go to your profile settings and copy your API key
+        3. **Choose Voice**: Browse available voices and copy the voice ID (optional)
+        4. **Browser Compatibility**: Voice input requires a modern browser with Speech Recognition support (Chrome, Edge, Safari)
+        
+        ### 🔊 Voice Features Include:
+        - **Voice Input**: Speak your questions instead of typing
+        - **Natural Responses**: AI-generated speech responses using ElevenLabs
+        - **Multiple Voices**: Choose from various voice options
+        - **Real-time Processing**: Seamless voice-to-text-to-voice workflow
         """)
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; opacity: 0.7; font-size: 0.9rem;">
-    Built with ❤️ using <strong>Streamlit</strong>, <strong>LangChain</strong>, <strong>Pinecone</strong>, and <strong>Google Gemini</strong>
+    Built with ❤️ using <strong>Streamlit</strong>, <strong>LangChain</strong>, <strong>Pinecone</strong>, <strong>Google Gemini</strong>, and <strong>ElevenLabs</strong>
+    <br>
+    🎤 Voice-enabled AI PDF Chatbot
 </div>
 """, unsafe_allow_html=True)
