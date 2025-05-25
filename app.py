@@ -872,14 +872,22 @@ with right_col:
                     if st.session_state.get('avatar_mode', False) and st.session_state.did_handler.api_key:
                         # Avatar mode - generate video
                         with st.spinner("🎭 Creating avatar response..."):
-                            logger.info("Attempting to create D-ID talk...")
+                            logger.info("Avatar mode enabled, creating D-ID talk...")
+                            logger.info(f"Using presenter ID: {st.session_state.did_handler.presenter_id}")
+                            logger.info(f"Response text length: {len(response)}")
+                            
                             talk_id = st.session_state.did_handler.create_talk(response)
                             if talk_id:
                                 logger.info(f"D-ID talk created with ID: {talk_id}")
                                 video_url = st.session_state.did_handler.get_talk_url(talk_id)
                                 logger.info(f"D-ID video URL retrieved: {video_url}")
+                                if video_url:
+                                    logger.info("Successfully generated avatar video")
+                                else:
+                                    logger.error("Failed to get video URL from D-ID")
                             else:
                                 logger.error("Failed to create D-ID talk")
+                                st.error("Failed to create avatar response. Please check your D-ID API key and settings.")
                                 
                     elif st.session_state.voice_enabled and st.session_state.voice_handler.api_key:
                         # Voice mode only - generate audio
@@ -919,12 +927,12 @@ with right_col:
                     create_video_player(
                         video_url, 
                         st.session_state.message_counter, 
-                        st.session_state.auto_play
+                        st.session_state.auto_play  # Use session state variable
                     ), 
                     unsafe_allow_html=True
                 )
                 
-                if auto_play:
+                if st.session_state.auto_play:  # Use session state variable
                     st.session_state.last_autoplay_message_id = st.session_state.message_counter
                     
             elif audio_content:
@@ -933,12 +941,12 @@ with right_col:
                     create_audio_player(
                         audio_content, 
                         st.session_state.message_counter, 
-                        st.session_state.auto_play
+                        st.session_state.auto_play  # Use session state variable
                     ), 
                     unsafe_allow_html=True
                 )
                 
-                if auto_play:
+                if st.session_state.auto_play:  # Use session state variable
                     st.session_state.last_autoplay_message_id = st.session_state.message_counter
 
             # Show sources
@@ -949,6 +957,19 @@ with right_col:
                         st.write(source.page_content)
                         st.write(f"📄 Page: {source.metadata.get('page', 'N/A')}")
                         st.divider()
+
+            # Add this after processing the response:
+            if debug_mode:
+                st.info("Debug Information:")
+                st.json({
+                    "Avatar Mode": st.session_state.get('avatar_mode', False),
+                    "D-ID API Key Present": bool(st.session_state.did_handler.api_key),
+                    "Presenter ID": st.session_state.did_handler.presenter_id,
+                    "Response Length": len(response),
+                    "Video URL": video_url if video_url else "None",
+                    "Auto Play": st.session_state.auto_play,
+                    "Message Counter": st.session_state.message_counter
+                })
 
 # Setup instructions
 if not st.session_state.document_processed:
