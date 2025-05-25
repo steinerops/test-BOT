@@ -665,6 +665,10 @@ if "last_autoplay_message_id" not in st.session_state:
 if "did_handler" not in st.session_state:
     st.session_state.did_handler = DIDHandler()
 
+# Add auto_play to session state initialization
+if "auto_play" not in st.session_state:
+    st.session_state.auto_play = True
+
 # Define the layout
 left_col, right_col = st.columns([1, 2])
 
@@ -692,19 +696,11 @@ with left_col:
         
         # Voice settings
         st.subheader("🔊 Voice Controls")
-        auto_play = st.checkbox("Auto-play responses", value=True)
-        
-        # Speech recognition info
-        if has_speech_recognition:
-            st.success("✅ Speech recognition available")
-        else:
-            st.warning("⚠️ Speech recognition not available. Install speech_recognition library.")
-        
-    elif voice_enabled and not st.session_state.voice_handler.api_key:
-        st.warning("⚠️ ElevenLabs API key not found. Voice features disabled.")
-        st.info("Add your ElevenLabs API key to secrets to enable voice features.")
+        # Add auto_play to session state
+        st.session_state.auto_play = st.checkbox("Auto-play responses", 
+                                               value=st.session_state.get('auto_play', True))
 
-    # Avatar settings
+# Avatar settings
     st.header("🎭 Avatar Settings")
     avatar_mode = st.toggle("Enable Avatar Mode", value=st.session_state.get('avatar_mode', False))
     st.session_state.avatar_mode = avatar_mode
@@ -799,7 +795,7 @@ with right_col:
                 if st.session_state.get('avatar_mode', False) and "video_url" in message:
                     should_autoplay = (
                         is_latest and 
-                        auto_play and 
+                        st.session_state.auto_play and 
                         st.session_state.get("last_autoplay_message_id", -1) != message_id
                     )
                     
@@ -815,7 +811,7 @@ with right_col:
                 elif st.session_state.voice_enabled and "audio" in message and not st.session_state.get('avatar_mode', False):
                     should_autoplay = (
                         is_latest and 
-                        auto_play and 
+                        st.session_state.auto_play and 
                         st.session_state.get("last_autoplay_message_id", -1) != message_id
                     )
                     
@@ -876,9 +872,14 @@ with right_col:
                     if st.session_state.get('avatar_mode', False) and st.session_state.did_handler.api_key:
                         # Avatar mode - generate video
                         with st.spinner("🎭 Creating avatar response..."):
+                            logger.info("Attempting to create D-ID talk...")
                             talk_id = st.session_state.did_handler.create_talk(response)
                             if talk_id:
+                                logger.info(f"D-ID talk created with ID: {talk_id}")
                                 video_url = st.session_state.did_handler.get_talk_url(talk_id)
+                                logger.info(f"D-ID video URL retrieved: {video_url}")
+                            else:
+                                logger.error("Failed to create D-ID talk")
                                 
                     elif st.session_state.voice_enabled and st.session_state.voice_handler.api_key:
                         # Voice mode only - generate audio
@@ -918,7 +919,7 @@ with right_col:
                     create_video_player(
                         video_url, 
                         st.session_state.message_counter, 
-                        auto_play
+                        st.session_state.auto_play
                     ), 
                     unsafe_allow_html=True
                 )
@@ -932,7 +933,7 @@ with right_col:
                     create_audio_player(
                         audio_content, 
                         st.session_state.message_counter, 
-                        auto_play
+                        st.session_state.auto_play
                     ), 
                     unsafe_allow_html=True
                 )
