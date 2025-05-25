@@ -785,27 +785,40 @@ with right_col:
     if not st.session_state.document_processed:
         st.info("Please upload a PDF document to start chatting.")
     else:
-        # Display chat history with proper audio control
+        # Display chat history with proper audio/video control
         for i, message in enumerate(st.session_state.chat_history):
             if message["role"] == "user":
                 st.chat_message("user").write(message["content"])
             else:
                 st.chat_message("assistant").write(message["content"])
                 
-                # Add audio player if voice is enabled and audio exists
-                if st.session_state.voice_enabled and "audio" in message:
-                    message_id = message.get("message_id", i)
-                    
-                    # Only autoplay if this is the most recent message AND 
-                    # it hasn't been played yet
-                    is_latest = (i == len(st.session_state.chat_history) - 1)
+                message_id = message.get("message_id", i)
+                is_latest = (i == len(st.session_state.chat_history) - 1)
+                
+                # Show avatar video if available
+                if st.session_state.get('avatar_mode', False) and "video_url" in message:
                     should_autoplay = (
                         is_latest and 
                         auto_play and 
                         st.session_state.get("last_autoplay_message_id", -1) != message_id
                     )
                     
-                    # Update the last autoplay message ID
+                    if should_autoplay:
+                        st.session_state.last_autoplay_message_id = message_id
+                    
+                    st.markdown(
+                        create_video_player(message["video_url"], message_id, should_autoplay), 
+                        unsafe_allow_html=True
+                    )
+                    
+                # Show audio player if voice is enabled and no avatar mode
+                elif st.session_state.voice_enabled and "audio" in message and not st.session_state.get('avatar_mode', False):
+                    should_autoplay = (
+                        is_latest and 
+                        auto_play and 
+                        st.session_state.get("last_autoplay_message_id", -1) != message_id
+                    )
+                    
                     if should_autoplay:
                         st.session_state.last_autoplay_message_id = message_id
                     
@@ -856,9 +869,19 @@ with right_col:
                         st.session_state.conversation, user_query
                     )
                     
-                    # Generate audio if voice is enabled
+                    # Generate avatar video or audio based on settings
                     audio_content = None
-                    if st.session_state.voice_enabled and st.session_state.voice_handler.api_key:
+                    video_url = None
+                    
+                    if st.session_state.get('avatar_mode', False) and st.session_state.did_handler.api_key:
+                        # Avatar mode - generate video
+                        with st.spinner("🎭 Creating avatar response..."):
+                            talk_id = st.session_state.did_handler.create_talk(response)
+                            if talk_id:
+                                video_url = st.session_state.did_handler.get_talk_url(talk_id)
+                                
+                    elif st.session_state.voice_enabled and st.session_state.voice_handler.api_key:
+                        # Voice mode only - generate audio
                         with st.spinner("🔊 Generating audio..."):
                             audio_content = st.session_state.voice_handler.text_to_speech(response)
                     
@@ -867,6 +890,7 @@ with right_col:
                     response = f"I'm sorry, I encountered an error while processing your query: {str(e)}"
                     sources = []
                     audio_content = None
+                    video_url = None
 
             # Display response
             st.chat_message("assistant").write(response)
@@ -878,24 +902,41 @@ with right_col:
                 "content": response,
                 "message_id": st.session_state.message_counter
             }
-            if audio_content:
+            
+            # Add audio or video data to message
+            if video_url:
+                message_data["video_url"] = video_url
+            elif audio_content:
                 message_data["audio"] = audio_content
+                
             st.session_state.chat_history.append(message_data)
 
-            # Play audio if available (only the new response)
-            if audio_content:
-                st.markdown("🔊 **Audio Response:**")
-                # This will be the latest message, so it should autoplay
+            # Display avatar video or play audio
+            if video_url:
+                st.markdown("🎭 **Avatar Response:**")
                 st.markdown(
-                    create_audio_player(
-                        audio_content, 
+                    create_video_player(
+                        video_url, 
                         st.session_state.message_counter, 
-                        auto_play  # This will be True for the new message
+                        auto_play
                     ), 
                     unsafe_allow_html=True
                 )
                 
-                # Update the last autoplay message ID
+                if auto_play:
+                    st.session_state.last_autoplay_message_id = st.session_state.message_counter
+                    
+            elif audio_content:
+                st.markdown("🔊 **Audio Response:**")
+                st.markdown(
+                    create_audio_player(
+                        audio_content, 
+                        st.session_state.message_counter, 
+                        auto_play
+                    ), 
+                    unsafe_allow_html=True
+                )
+                
                 if auto_play:
                     st.session_state.last_autoplay_message_id = st.session_state.message_counter
 
