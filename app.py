@@ -106,6 +106,100 @@ class VoiceHandler:
             logger.error(f"Error fetching voices: {str(e)}")
             return []
 
+class DIDHandler:
+    def __init__(self):
+        self.api_key = st.secrets.get("DID_API_KEY", "")
+        self.base_url = "https://api.d-id.com"
+        # Use the provided presenter ID from secrets or fall back to default
+        self.presenter_id = st.secrets.get("DID_PRESENTER_ID", "amy-jcwCkr1grs")  # Amy is the default presenter
+        
+    def get_available_presenters(self):
+        """Get list of available presenters from D-ID"""
+        if not self.api_key:
+            return []
+            
+        url = f"{self.base_url}/presenters"
+        headers = {
+            "Authorization": f"Basic {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                presenters = response.json().get("presenters", [])
+                return [(presenter["id"], presenter["name"]) for presenter in presenters]
+            return []
+        except Exception as e:
+            logger.error(f"Error fetching presenters: {str(e)}")
+            return []
+            
+    def create_talk(self, text):
+        """Create a talking video using D-ID API"""
+        if not self.api_key or not self.presenter_id:
+            logger.warning("D-ID API key or presenter ID not found")
+            return None
+            
+        url = f"{self.base_url}/talks"
+        
+        headers = {
+            "Authorization": f"Basic {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "script": {
+                "type": "text",
+                "input": text
+            },
+            "presenter_id": self.presenter_id,
+            "driver_id": "wav2lip"
+        }
+        
+        try:
+            response = requests.post(url, json=data, headers=headers)
+            if response.status_code == 201:
+                return response.json().get("id")
+            else:
+                logger.error(f"D-ID API error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Error calling D-ID API: {str(e)}")
+            return None
+            
+    def get_talk_url(self, talk_id):
+        """Get the video URL for a completed talk"""
+        if not self.api_key:
+            return None
+            
+        url = f"{self.base_url}/talks/{talk_id}"
+        headers = {"Authorization": f"Basic {self.api_key}"}
+        
+        max_attempts = 10
+        attempt = 0
+        
+        while attempt < max_attempts:
+            try:
+                response = requests.get(url, headers=headers)
+                if response.status_code == 200:
+                    result = response.json()
+                    status = result.get("status")
+                    
+                    if status == "done":
+                        return result.get("result_url")
+                    elif status in ["error", "failed"]:
+                        logger.error(f"Talk generation failed: {result.get('error', 'Unknown error')}")
+                        return None
+                        
+                time.sleep(2)  # Wait before checking again
+                attempt += 1
+            except Exception as e:
+                logger.error(f"Error checking talk status: {str(e)}")
+                return None
+                
+        logger.error("Timeout waiting for talk to complete")
+        return None
+
 # Set up environment variables from Streamlit secrets
 def setup_environment():
     # Set required API keys
@@ -837,6 +931,10 @@ if not st.session_state.document_processed:
         ELEVENLABS_API_KEY = "your-elevenlabs-api-key"
         ELEVENLABS_VOICE_ID = "21m00Tcm4TlvDq8ikWAM"  # Optional: specific voice ID
 
+        # Avatar functionality (D-ID)
+        DID_API_KEY = "your-did-api-key"
+        DID_PRESENTER_ID = "your-presenter-id"  # Optional: specific presenter ID
+
         # Optional LangSmith configuration (for advanced monitoring)
         LANGCHAIN_API_KEY = "your-langsmith-api-key"
         LANGCHAIN_PROJECT = "pdf-chatbot"
@@ -874,6 +972,13 @@ if not st.session_state.document_processed:
         - **AI Processing**: Questions sent to Google Gemini for processing
         - **Text-to-Speech**: Responses converted to speech using ElevenLabs
         - **Audio Playback**: Seamless audio responses in the chat interface
+
+        ### 🎭 Avatar Features Setup
+
+        1. **D-ID Account**: Sign up at [D-ID.com](https://www.d-id.com/)
+        2. **Get API Key**: Go to your account settings and copy your API key
+        3. **Choose Presenter**: Browse available presenters and copy the presenter ID (optional)
+        4. **Browser Support**: Avatar videos are generated using D-ID's API and played in the browser
         """)
 
 # Footer
