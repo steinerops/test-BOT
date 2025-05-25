@@ -416,6 +416,59 @@ def create_audio_player(audio_content, message_id, should_autoplay=False):
     """
     return audio_html
 
+def create_video_player(video_url, message_id, should_autoplay=False):
+    """Create an HTML video player for the avatar response"""
+    autoplay_attr = "autoplay muted" if should_autoplay else ""
+    
+    video_html = f"""
+    <div id="video_container_{message_id}" style="margin: 10px 0;">
+        <video id="video_{message_id}" controls {autoplay_attr} style="width: 100%; max-width: 400px; border-radius: 10px;">
+            <source src="{video_url}" type="video/mp4">
+            Your browser does not support the video element.
+        </video>
+    </div>
+    <script>
+        (function() {{
+            const videoElement = document.getElementById('video_{message_id}');
+            
+            if (videoElement.hasAttribute('data-processed')) {{
+                return;
+            }}
+            
+            videoElement.setAttribute('data-processed', 'true');
+            
+            // Stop all other videos when this one starts
+            videoElement.addEventListener('play', function() {{
+                const allVideos = document.querySelectorAll('video');
+                const allAudios = document.querySelectorAll('audio');
+                
+                allVideos.forEach(function(video) {{
+                    if (video.id !== 'video_{message_id}' && !video.paused) {{
+                        video.pause();
+                        video.currentTime = 0;
+                    }}
+                }});
+                
+                allAudios.forEach(function(audio) {{
+                    if (!audio.paused) {{
+                        audio.pause();
+                        audio.currentTime = 0;
+                    }}
+                }});
+            }});
+            
+            if ({str(should_autoplay).lower()}) {{
+                setTimeout(function() {{
+                    videoElement.play().catch(function(error) {{
+                        console.log('Video autoplay prevented:', error);
+                    }});
+                }}, 100);
+            }}
+        }})();
+    </script>
+    """
+    return video_html
+
 def create_voice_input_interface():
     """Create voice input interface using Streamlit's built-in audio input"""
     st.markdown("### 🎤 Voice Input")
@@ -515,6 +568,8 @@ if "message_counter" not in st.session_state:
     st.session_state.message_counter = 0
 if "last_autoplay_message_id" not in st.session_state:
     st.session_state.last_autoplay_message_id = -1
+if "did_handler" not in st.session_state:
+    st.session_state.did_handler = DIDHandler()
 
 # Define the layout
 left_col, right_col = st.columns([1, 2])
@@ -554,6 +609,29 @@ with left_col:
     elif voice_enabled and not st.session_state.voice_handler.api_key:
         st.warning("⚠️ ElevenLabs API key not found. Voice features disabled.")
         st.info("Add your ElevenLabs API key to secrets to enable voice features.")
+
+    # Avatar settings
+    st.header("🎭 Avatar Settings")
+    avatar_mode = st.toggle("Enable Avatar Mode", value=st.session_state.get('avatar_mode', False))
+    st.session_state.avatar_mode = avatar_mode
+    
+    if avatar_mode and st.session_state.did_handler.api_key:
+        # Presenter selection
+        presenters = st.session_state.did_handler.get_available_presenters()
+        if presenters:
+            selected_presenter = st.selectbox(
+                "Select Avatar",
+                options=[presenter[0] for presenter in presenters],
+                format_func=lambda x: next((presenter[1] for presenter in presenters if presenter[0] == x), x),
+                index=0
+            )
+            st.session_state.did_handler.presenter_id = selected_presenter
+        
+        st.info("🎭 Avatar will speak responses using D-ID technology")
+        
+    elif avatar_mode and not st.session_state.did_handler.api_key:
+        st.warning("⚠️ D-ID API key not found. Avatar mode disabled.")
+        st.info("Add your D-ID API key to secrets to enable avatar features.")
 
     debug_mode = st.toggle("Debug Mode", value=False)
 
