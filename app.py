@@ -776,7 +776,7 @@ with left_col:
 
 # Chat interface
 with right_col:
-    st.header("💬 Chat with your PDF")
+    st.header("💬 Chat with your Knowledge-Base")
 
     if not st.session_state.document_processed:
         st.info("Please upload a PDF document to start chatting.")
