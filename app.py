@@ -632,8 +632,8 @@ def process_audio_to_text(audio_input):
         return None
 
 # Streamlit UI
-st.set_page_config(page_title="AI PDF Chatbot with Voice", layout="wide")
-st.title("🎤 AI PDF Chatbot with Voice")
+st.set_page_config(page_title="AI Knowledge-Base Chatbot with Voice", layout="wide")
+st.title("🎤 AI Knowledge-Base Chatbot with Voice")
 st.write("Upload a PDF and chat with it using voice or text!")
 
 # Initialize session state
