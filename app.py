@@ -5,6 +5,10 @@ import logging
 import requests
 import base64
 import time
+import pandas as pd
+import numpy as np
+from pptx import Presentation
+from docx import Document as DocxDocument
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -353,6 +357,340 @@ class PDFChatbot:
 
         return documents
 
+    def extract_text_from_txt(self, txt_file):
+        """Extract text from TXT file and return as Document objects"""
+        logger.info(f"Starting text extraction from TXT: {txt_file.name}")
+        
+        try:
+            # Read the text file content
+            text_content = txt_file.getvalue().decode('utf-8')
+            logger.info(f"Successfully read TXT file with {len(text_content)} characters")
+            
+            # Create a Document object using LangChain's Document class
+            from langchain_core.documents import Document
+            document = Document(
+                page_content=text_content,
+                metadata={
+                    "source": txt_file.name,
+                    "file_type": "txt",
+                    "page": 1  # TXT files are treated as single page
+                }
+            )
+            
+            logger.info("Created Document object from TXT file")
+            return [document]  # Return as list to match PDF structure
+            
+        except UnicodeDecodeError:
+            logger.error("Error: Unable to decode TXT file. Please ensure it's UTF-8 encoded.")
+            st.error("Error: Unable to decode TXT file. Please ensure it's UTF-8 encoded.")
+            return []
+        except Exception as e:
+            logger.error(f"Error extracting text from TXT: {str(e)}")
+            st.error(f"Error extracting text: {str(e)}")
+            return []
+
+    def extract_text_from_docx(self, docx_file):
+        """Extract text from DOCX file and return as Document objects"""
+        logger.info(f"Starting text extraction from DOCX: {docx_file.name}")
+        
+        try:
+            # Create a temporary file for the DOCX
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx') as tmp_file:
+                tmp_file.write(docx_file.getvalue())
+                docx_path = tmp_file.name
+            
+            logger.info(f"Temporary DOCX file created: {docx_path}")
+            
+            try:
+                # Load the DOCX document
+                doc = DocxDocument(docx_path)
+                
+                # Extract text from all paragraphs
+                text_content = []
+                for paragraph in doc.paragraphs:
+                    if paragraph.text.strip():  # Only add non-empty paragraphs
+                        text_content.append(paragraph.text.strip())
+                
+                # Extract text from tables if present
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            if cell.text.strip():
+                                text_content.append(cell.text.strip())
+                
+                # Join all text with newlines
+                full_text = '\n\n'.join(text_content)
+                
+                logger.info(f"Successfully extracted DOCX with {len(full_text)} characters from {len(text_content)} text blocks")
+                
+                # Create a Document object using LangChain's Document class
+                from langchain_core.documents import Document
+                document = Document(
+                    page_content=full_text,
+                    metadata={
+                        "source": docx_file.name,
+                        "file_type": "docx",
+                        "page": 1,  # DOCX files are treated as single page
+                        "paragraphs": len(doc.paragraphs),
+                        "tables": len(doc.tables)
+                    }
+                )
+                
+                logger.info("Created Document object from DOCX file")
+                return [document]  # Return as list to match PDF structure
+                
+            except Exception as e:
+                logger.error(f"Error processing DOCX content: {str(e)}")
+                st.error(f"Error processing DOCX content: {str(e)}")
+                return []
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(docx_path)
+                    logger.info("Temporary DOCX file deleted")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not delete temporary DOCX file: {cleanup_error}")
+                
+        except Exception as e:
+            logger.error(f"Error extracting text from DOCX: {str(e)}")
+            st.error(f"Error extracting text from DOCX: {str(e)}")
+            return []
+
+    def extract_text_from_pptx(self, pptx_file):
+        """Extract text from PPTX file and return as Document objects"""
+        logger.info(f"Starting text extraction from PPTX: {pptx_file.name}")
+        
+        try:
+            # Create a temporary file for the PPTX
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pptx') as tmp_file:
+                tmp_file.write(pptx_file.getvalue())
+                pptx_path = tmp_file.name
+            
+            logger.info(f"Temporary PPTX file created: {pptx_path}")
+            
+            try:
+                # Load the PPTX presentation
+                prs = Presentation(pptx_path)
+                
+                documents = []
+                total_slides = len(prs.slides)
+                logger.info(f"Processing {total_slides} slides from PPTX")
+                
+                # Extract text from each slide
+                for slide_num, slide in enumerate(prs.slides, 1):
+                    slide_text = []
+                    
+                    # Extract text from all shapes in the slide
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text.strip():
+                            slide_text.append(shape.text.strip())
+                        
+                        # Extract text from tables if present
+                        if shape.has_table:
+                            table = shape.table
+                            for row in table.rows:
+                                for cell in row.cells:
+                                    if cell.text.strip():
+                                        slide_text.append(cell.text.strip())
+                    
+                    # Create document for this slide if it has content
+                    if slide_text:
+                        slide_content = '\n\n'.join(slide_text)
+                        
+                        # Create a Document object using LangChain's Document class
+                        from langchain_core.documents import Document
+                        document = Document(
+                            page_content=slide_content,
+                            metadata={
+                                "source": pptx_file.name,
+                                "file_type": "pptx",
+                                "slide": slide_num,
+                                "total_slides": total_slides,
+                                "page": slide_num  # For compatibility with existing code
+                            }
+                        )
+                        documents.append(document)
+                        logger.info(f"Processed slide {slide_num} with {len(slide_content)} characters")
+                    else:
+                        logger.info(f"Slide {slide_num} has no extractable text content")
+                
+                logger.info(f"Successfully extracted text from {len(documents)} slides out of {total_slides} total slides")
+                return documents
+                
+            except Exception as e:
+                logger.error(f"Error processing PPTX content: {str(e)}")
+                st.error(f"Error processing PPTX content: {str(e)}")
+                return []
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(pptx_path)
+                    logger.info("Temporary PPTX file deleted")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not delete temporary PPTX file: {cleanup_error}")
+                    
+        except Exception as e:
+            logger.error(f"Error extracting text from PPTX: {str(e)}")
+            st.error(f"Error extracting text from PPTX: {str(e)}")
+            return []
+
+    def extract_text_from_excel(self, excel_file):
+        """Extract text from Excel file and return as Document objects"""
+        logger.info(f"Starting text extraction from Excel: {excel_file.name}")
+        
+        try:
+            # Create a temporary file for the Excel file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+                tmp_file.write(excel_file.getvalue())
+                excel_path = tmp_file.name
+            
+            logger.info(f"Temporary Excel file created: {excel_path}")
+            
+            try:
+                # Read all sheets from the Excel file
+                excel_data = pd.read_excel(excel_path, sheet_name=None, engine='openpyxl')
+                
+                documents = []
+                total_sheets = len(excel_data)
+                logger.info(f"Processing {total_sheets} sheets from Excel file")
+                
+                # Process each sheet
+                for sheet_num, (sheet_name, df) in enumerate(excel_data.items(), 1):
+                    logger.info(f"Processing sheet: {sheet_name} with {len(df)} rows and {len(df.columns)} columns")
+                    
+                    # Skip empty sheets
+                    if df.empty:
+                        logger.info(f"Sheet '{sheet_name}' is empty, skipping")
+                        continue
+                    
+                    # Convert DataFrame to markdown-style table string
+                    sheet_content = self._dataframe_to_markdown_table(df, sheet_name)
+                    
+                    if sheet_content.strip():
+                        # Create a Document object using LangChain's Document class
+                        from langchain_core.documents import Document
+                        document = Document(
+                            page_content=sheet_content,
+                            metadata={
+                                "source": excel_file.name,
+                                "file_type": "excel",
+                                "sheet_name": sheet_name,
+                                "sheet_number": sheet_num,
+                                "total_sheets": total_sheets,
+                                "rows": len(df),
+                                "columns": len(df.columns),
+                                "page": sheet_num  # For compatibility with existing code
+                            }
+                        )
+                        documents.append(document)
+                        logger.info(f"Processed sheet '{sheet_name}' with {len(sheet_content)} characters")
+                    else:
+                        logger.info(f"Sheet '{sheet_name}' has no extractable content")
+                
+                logger.info(f"Successfully extracted text from {len(documents)} sheets out of {total_sheets} total sheets")
+                return documents
+                
+            except Exception as e:
+                logger.error(f"Error processing Excel content: {str(e)}")
+                st.error(f"Error processing Excel content: {str(e)}")
+                return []
+            finally:
+                # Clean up temporary file
+                try:
+                    os.unlink(excel_path)
+                    logger.info("Temporary Excel file deleted")
+                except Exception as cleanup_error:
+                    logger.warning(f"Could not delete temporary Excel file: {cleanup_error}")
+                    
+        except Exception as e:
+            logger.error(f"Error extracting text from Excel: {str(e)}")
+            st.error(f"Error extracting text from Excel: {str(e)}")
+            return []
+
+    def _dataframe_to_markdown_table(self, df, sheet_name):
+        """Convert pandas DataFrame to a readable markdown-style table string"""
+        try:
+            # Start with sheet information
+            content_lines = [
+                f"## Sheet: {sheet_name}",
+                f"**Rows:** {len(df)} | **Columns:** {len(df.columns)}",
+                ""
+            ]
+            
+            # Handle completely empty DataFrame
+            if df.empty:
+                content_lines.append("*This sheet contains no data.*")
+                return "\n".join(content_lines)
+            
+            # Clean column names and handle unnamed columns
+            clean_columns = []
+            for i, col in enumerate(df.columns):
+                if pd.isna(col) or str(col).startswith('Unnamed:'):
+                    clean_columns.append(f"Column_{i+1}")
+                else:
+                    clean_columns.append(str(col).strip())
+            
+            df.columns = clean_columns
+            
+            # Limit the number of rows for very large sheets (to prevent memory issues)
+            max_rows = 1000
+            if len(df) > max_rows:
+                df_sample = df.head(max_rows)
+                content_lines.append(f"*Note: Showing first {max_rows} rows out of {len(df)} total rows*")
+                content_lines.append("")
+            else:
+                df_sample = df
+            
+            # Convert DataFrame to string representation
+            # Fill NaN values with empty strings for better readability
+            df_clean = df_sample.fillna('')
+            
+            # Convert to string, handling different data types
+            df_str = df_clean.astype(str)
+            
+            # Create table header
+            header_row = "| " + " | ".join(df_str.columns) + " |"
+            separator_row = "| " + " | ".join(["---"] * len(df_str.columns)) + " |"
+            
+            content_lines.extend([header_row, separator_row])
+            
+            # Add data rows
+            for _, row in df_str.iterrows():
+                # Clean row values and limit length to prevent extremely long cells
+                clean_row_values = []
+                for val in row:
+                    clean_val = str(val).strip()
+                    # Limit cell content to 100 characters to prevent excessive length
+                    if len(clean_val) > 100:
+                        clean_val = clean_val[:97] + "..."
+                    # Replace newlines and pipe characters that would break markdown
+                    clean_val = clean_val.replace('\n', ' ').replace('\r', ' ').replace('|', '\\|')
+                    clean_row_values.append(clean_val)
+                
+                data_row = "| " + " | ".join(clean_row_values) + " |"
+                content_lines.append(data_row)
+            
+            # Add summary statistics for numeric columns
+            numeric_cols = df_sample.select_dtypes(include=[np.number]).columns
+            if len(numeric_cols) > 0:
+                content_lines.extend([
+                    "",
+                    "### Summary Statistics for Numeric Columns:",
+                    ""
+                ])
+                
+                for col in numeric_cols:
+                    if col in df_sample.columns:
+                        col_data = pd.to_numeric(df_sample[col], errors='coerce').dropna()
+                        if len(col_data) > 0:
+                            content_lines.append(f"**{col}:** Count: {len(col_data)}, Mean: {col_data.mean():.2f}, Min: {col_data.min()}, Max: {col_data.max()}")
+            
+            return "\n".join(content_lines)
+            
+        except Exception as e:
+            logger.error(f"Error converting DataFrame to markdown: {str(e)}")
+            return f"## Sheet: {sheet_name}\n\nError processing sheet data: {str(e)}"
+
     def chunk_text(self, documents):
         logger.info("Starting text chunking process")
 
@@ -675,7 +1013,7 @@ left_col, right_col = st.columns([1, 2])
 # Sidebar content
 with left_col:
     st.header("📄 Upload Document")
-    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    uploaded_file = st.file_uploader("Choose a PDF, TXT, DOCX, PPTX, or Excel file", type=["pdf", "txt", "docx", "pptx", "xlsx"])
 
     # Voice settings
     st.header("🎤 Voice Settings")
@@ -734,13 +1072,41 @@ with left_col:
             status_container = st.empty()
 
             try:
-                status_container.info("Extracting text from PDF...")
-                documents = st.session_state.chatbot.extract_text_from_pdf(uploaded_file)
+                status_container.info("Extracting text from document...")
+                
+                # Check file type and process accordingly
+                if uploaded_file.name.lower().endswith('.pdf'):
+                    documents = st.session_state.chatbot.extract_text_from_pdf(uploaded_file)
+                    file_type = "PDF"
+                elif uploaded_file.name.lower().endswith('.txt'):
+                    documents = st.session_state.chatbot.extract_text_from_txt(uploaded_file)
+                    file_type = "TXT"
+                elif uploaded_file.name.lower().endswith('.docx'):
+                    documents = st.session_state.chatbot.extract_text_from_docx(uploaded_file)
+                    file_type = "DOCX"
+                elif uploaded_file.name.lower().endswith('.pptx'):
+                    documents = st.session_state.chatbot.extract_text_from_pptx(uploaded_file)
+                    file_type = "PPTX"
+                elif uploaded_file.name.lower().endswith('.xlsx'):
+                    documents = st.session_state.chatbot.extract_text_from_excel(uploaded_file)
+                    file_type = "Excel"
+                else:
+                    status_container.error("Unsupported file type. Please upload a PDF, TXT, DOCX, PPTX, or Excel file.")
+                    documents = []
 
                 if not documents:
-                    status_container.error("Failed to extract text from PDF. Please try another file.")
+                    status_container.error(f"Failed to extract text from {file_type}. Please try another file.")
                 else:
-                    status_container.success(f"✅ Extracted {len(documents)} pages from PDF")
+                    if file_type == "PDF":
+                        status_container.success(f"✅ Extracted {len(documents)} pages from PDF")
+                    elif file_type == "TXT":
+                        status_container.success(f"✅ Successfully loaded TXT file")
+                    elif file_type == "DOCX":
+                        status_container.success(f"✅ Successfully loaded DOCX file")
+                    elif file_type == "PPTX":
+                        status_container.success(f"✅ Extracted {len(documents)} slides from PPTX")
+                    elif file_type == "Excel":
+                        status_container.success(f"✅ Extracted {len(documents)} sheets from Excel file")
 
                     status_container.info("Chunking text...")
                     chunks = st.session_state.chatbot.chunk_text(documents)
