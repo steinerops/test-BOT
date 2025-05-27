@@ -137,9 +137,79 @@ class DIDHandler:
         except Exception as e:
             logger.error(f"Error fetching presenters: {str(e)}")
             return []
+    
+    def upload_custom_image(self, image_file):
+        """Upload a custom image to D-ID and return the image URL"""
+        if not self.api_key:
+            logger.warning("D-ID API key not found")
+            return None
             
-    def create_talk(self, text):
-        """Create a talking video using D-ID API"""
+        url = f"{self.base_url}/images"
+        
+        headers = {
+            "Authorization": f"Basic {self.api_key}"
+        }
+        
+        try:
+            # Prepare the file for upload
+            files = {
+                'image': (image_file.name, image_file.getvalue(), image_file.type)
+            }
+            
+            response = requests.post(url, headers=headers, files=files)
+            
+            if response.status_code == 201:
+                result = response.json()
+                image_url = result.get("url")
+                logger.info(f"Successfully uploaded custom image: {image_url}")
+                return image_url
+            else:
+                logger.error(f"D-ID image upload error: {response.status_code} - {response.text}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error uploading image to D-ID: {str(e)}")
+            return None
+    
+    def create_talk_with_custom_image(self, text, image_url):
+        """Create a talking video using D-ID API with custom image"""
+        if not self.api_key:
+            logger.warning("D-ID API key not found")
+            return None
+            
+        url = f"{self.base_url}/talks"
+        
+        headers = {
+            "Authorization": f"Basic {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        
+        data = {
+            "script": {
+                "type": "text",
+                "input": text
+            },
+            "source_url": image_url,  # Use custom image instead of presenter_id
+            "driver_id": "wav2lip"
+        }
+        
+        try:
+            response = requests.post(url, json=data, headers=headers)
+            if response.status_code == 201:
+                return response.json().get("id")
+            else:
+                logger.error(f"D-ID API error: {response.status_code} - {response.text}")
+                return None
+        except Exception as e:
+            logger.error(f"Error calling D-ID API: {str(e)}")
+            return None
+            
+    def create_talk(self, text, custom_image_url=None):
+        """Create a talking video using D-ID API with either custom image or presenter"""
+        if custom_image_url:
+            return self.create_talk_with_custom_image(text, custom_image_url)
+        
+        # Original method using presenter_id
         if not self.api_key or not self.presenter_id:
             logger.warning("D-ID API key or presenter ID not found")
             return None
@@ -969,6 +1039,128 @@ def process_audio_to_text(audio_input):
         logger.error(f"Error in process_audio_to_text: {str(e)}")
         return None
 
+# Avatar settings UI function
+def create_avatar_settings_ui():
+    """Create enhanced avatar settings UI with custom photo upload"""
+    st.header("🎭 Avatar Settings")
+    avatar_mode = st.toggle("Enable Avatar Mode", value=st.session_state.get('avatar_mode', False))
+    st.session_state.avatar_mode = avatar_mode
+    
+    if avatar_mode and st.session_state.did_handler.api_key:
+        # Avatar type selection
+        avatar_type = st.radio(
+            "Choose Avatar Type:",
+            ["Use Default Presenters", "Upload Your Own Photo"],
+            index=0 if not st.session_state.get('use_custom_avatar', False) else 1
+        )
+        
+        st.session_state.use_custom_avatar = (avatar_type == "Upload Your Own Photo")
+        
+        if st.session_state.use_custom_avatar:
+            st.subheader("📸 Upload Your Photo")
+            
+            # Photo upload
+            uploaded_photo = st.file_uploader(
+                "Choose your photo",
+                type=["jpg", "jpeg", "png"],
+                help="Upload a clear, front-facing photo of yourself. Best results with good lighting and neutral background."
+            )
+            
+            if uploaded_photo:
+                # Display the uploaded photo
+                st.image(uploaded_photo, caption="Your uploaded photo", width=200)
+                
+                # Upload to D-ID and store URL
+                if st.button("🚀 Upload Photo to D-ID"):
+                    with st.spinner("Uploading your photo to D-ID..."):
+                        image_url = st.session_state.did_handler.upload_custom_image(uploaded_photo)
+                        if image_url:
+                            st.session_state.custom_avatar_url = image_url
+                            st.success("✅ Photo uploaded successfully! Your custom avatar is ready.")
+                            st.info(f"🔗 Image URL: {image_url}")
+                        else:
+                            st.error("❌ Failed to upload photo. Please check your D-ID API key and try again.")
+                
+                # Show upload status
+                if st.session_state.get('custom_avatar_url'):
+                    st.success("✅ Custom avatar ready!")
+                    if st.button("🗑️ Remove Custom Avatar"):
+                        del st.session_state.custom_avatar_url
+                        st.rerun()
+                else:
+                    st.info("👆 Click 'Upload Photo to D-ID' to prepare your custom avatar")
+            
+            # Photo guidelines
+            with st.expander("📋 Photo Guidelines for Best Results"):
+                st.markdown("""
+                **For optimal avatar quality:**
+                
+                ✅ **Good Photos:**
+                - Clear, front-facing photo
+                - Good lighting (natural light preferred)
+                - Neutral or plain background
+                - Face clearly visible
+                - High resolution (at least 512x512px)
+                - Person looking directly at camera
+                
+                ❌ **Avoid:**
+                - Blurry or low-quality images
+                - Side profiles or angled faces
+                - Sunglasses or face coverings
+                - Busy or cluttered backgrounds
+                - Multiple people in the photo
+                - Very dark or overexposed photos
+                """)
+        
+        else:
+            # Default presenter selection
+            st.subheader("👤 Select Default Presenter")
+            presenters = st.session_state.did_handler.get_available_presenters()
+            if presenters:
+                selected_presenter = st.selectbox(
+                    "Select Avatar",
+                    options=[presenter[0] for presenter in presenters],
+                    format_func=lambda x: next((presenter[1] for presenter in presenters if presenter[0] == x), x),
+                    index=0
+                )
+                st.session_state.did_handler.presenter_id = selected_presenter
+        
+        st.info("🎭 Avatar will speak responses using D-ID technology")
+        
+    elif avatar_mode and not st.session_state.did_handler.api_key:
+        st.warning("⚠️ D-ID API key not found. Avatar mode disabled.")
+        st.info("Add your D-ID API key to secrets to enable avatar features.")
+
+def process_avatar_response(response, user_query):
+    """Process avatar response with custom or default avatar"""
+    video_url = None
+    
+    if st.session_state.get('avatar_mode', False) and st.session_state.did_handler.api_key:
+        with st.spinner("🎭 Creating avatar response..."):
+            logger.info("Avatar mode enabled, creating D-ID talk...")
+            
+            # Check if using custom avatar
+            if st.session_state.get('use_custom_avatar', False) and st.session_state.get('custom_avatar_url'):
+                logger.info(f"Using custom avatar with URL: {st.session_state.custom_avatar_url}")
+                talk_id = st.session_state.did_handler.create_talk(response, st.session_state.custom_avatar_url)
+            else:
+                logger.info(f"Using default presenter ID: {st.session_state.did_handler.presenter_id}")
+                talk_id = st.session_state.did_handler.create_talk(response)
+            
+            if talk_id:
+                logger.info(f"D-ID talk created with ID: {talk_id}")
+                video_url = st.session_state.did_handler.get_talk_url(talk_id)
+                logger.info(f"D-ID video URL retrieved: {video_url}")
+                if video_url:
+                    logger.info("Successfully generated avatar video")
+                else:
+                    logger.error("Failed to get video URL from D-ID")
+            else:
+                logger.error("Failed to create D-ID talk")
+                st.error("Failed to create avatar response. Please check your D-ID API key and settings.")
+    
+    return video_url
+
 # Streamlit UI
 st.set_page_config(page_title="AI Knowledge-Base Chatbot with Voice", layout="wide")
 st.title("🎤 AI Knowledge-Base Chatbot with Voice")
@@ -1039,27 +1231,7 @@ with left_col:
                                                value=st.session_state.get('auto_play', True))
 
 # Avatar settings
-    st.header("🎭 Avatar Settings")
-    avatar_mode = st.toggle("Enable Avatar Mode", value=st.session_state.get('avatar_mode', False))
-    st.session_state.avatar_mode = avatar_mode
-    
-    if avatar_mode and st.session_state.did_handler.api_key:
-        # Presenter selection
-        presenters = st.session_state.did_handler.get_available_presenters()
-        if presenters:
-            selected_presenter = st.selectbox(
-                "Select Avatar",
-                options=[presenter[0] for presenter in presenters],
-                format_func=lambda x: next((presenter[1] for presenter in presenters if presenter[0] == x), x),
-                index=0
-            )
-            st.session_state.did_handler.presenter_id = selected_presenter
-        
-        st.info("🎭 Avatar will speak responses using D-ID technology")
-        
-    elif avatar_mode and not st.session_state.did_handler.api_key:
-        st.warning("⚠️ D-ID API key not found. Avatar mode disabled.")
-        st.info("Add your D-ID API key to secrets to enable avatar features.")
+    create_avatar_settings_ui()
 
     debug_mode = st.toggle("Debug Mode", value=False)
 
@@ -1233,32 +1405,7 @@ with right_col:
                     
                     # Generate avatar video or audio based on settings
                     audio_content = None
-                    video_url = None
-                    
-                    if st.session_state.get('avatar_mode', False) and st.session_state.did_handler.api_key:
-                        # Avatar mode - generate video
-                        with st.spinner("🎭 Creating avatar response..."):
-                            logger.info("Avatar mode enabled, creating D-ID talk...")
-                            logger.info(f"Using presenter ID: {st.session_state.did_handler.presenter_id}")
-                            logger.info(f"Response text length: {len(response)}")
-                            
-                            talk_id = st.session_state.did_handler.create_talk(response)
-                            if talk_id:
-                                logger.info(f"D-ID talk created with ID: {talk_id}")
-                                video_url = st.session_state.did_handler.get_talk_url(talk_id)
-                                logger.info(f"D-ID video URL retrieved: {video_url}")
-                                if video_url:
-                                    logger.info("Successfully generated avatar video")
-                                else:
-                                    logger.error("Failed to get video URL from D-ID")
-                            else:
-                                logger.error("Failed to create D-ID talk")
-                                st.error("Failed to create avatar response. Please check your D-ID API key and settings.")
-                                
-                    elif st.session_state.voice_enabled and st.session_state.voice_handler.api_key:
-                        # Voice mode only - generate audio
-                        with st.spinner("🔊 Generating audio..."):
-                            audio_content = st.session_state.voice_handler.text_to_speech(response)
+                    video_url = process_avatar_response(response, user_query)
                     
                 except Exception as e:
                     logger.error(f"Error processing query: {str(e)}")
