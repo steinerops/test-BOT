@@ -9,6 +9,9 @@ langchain-google-genai
 pinecone-client==2.2.4
 google-generativeai
 PyMuPDF
+python-docx
+python-pptx
+openpyxl
 sentence-transformers
 transformers
 torch
